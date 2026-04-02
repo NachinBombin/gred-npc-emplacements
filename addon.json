@@ -1,0 +1,7 @@
+{
+	"title": "Gred NPC Emplacements",
+	"description": "Makes all Gredwitch Emplacement Pack guns usable by NPCs. Requires Gredwitch's Emplacement Pack.",
+	"type": "gamemode",
+	"tags": ["npc", "emplacement", "combine"],
+	"ignore": []
+}
