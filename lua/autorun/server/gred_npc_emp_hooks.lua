@@ -1,21 +1,23 @@
 -- gred_npc_emp_hooks.lua
--- Server-side hooks that:
---   1. Inject KeyDown/IsPlayer/EyeAngles stubs onto any NPC that grabs a turret
---   2. Patch ShooterStillValid to accept live NPCs
---   3. Guard CalcAmmoType KeyDown calls for non-player shooters
--- This file must be loaded AFTER gred_emp_base, so we use a hook on
--- InitPostEntity to safely override the base methods.
+-- Patches gred_emp_base to allow NPCs to man emplacements.
+-- Uses a deferred one-shot Think hook because InitPostEntity fires before
+-- Gredwitch finishes registering its scripted entities.
 
-hook.Add("InitPostEntity", "gred_npc_emp_patchbase", function()
+local function PatchBase()
+    local reg = scripted_ents.GetStored("gred_emp_base")
+    if not reg then return false end
 
-    local base = scripted_ents.Get("gred_emp_base")
-    if not base then return end
-    local ENT = base.t
+    -- In GMod, GetStored returns a table with a "t" key containing the ENT methods
+    -- but only after the entity has been fully registered. Check both.
+    local ENT = reg.t or reg
+    if not ENT or not ENT.GrabTurret then return false end
+
+    -- Already patched
+    if ENT._gredNPCPatched then return true end
+    ENT._gredNPCPatched = true
 
     ------------------------------------------------------------
     -- Patch: ShooterStillValid
-    -- Original only handles players. We extend it to also keep
-    -- NPCs alive as valid shooters.
     ------------------------------------------------------------
     local orig_ShooterStillValid = ENT.ShooterStillValid
     function ENT:ShooterStillValid(ply, botmode)
@@ -30,8 +32,6 @@ hook.Add("InitPostEntity", "gred_npc_emp_patchbase", function()
 
     ------------------------------------------------------------
     -- Patch: CalcAmmoType
-    -- Guards IN_RELOAD and IN_ATTACK2 calls so they don't error
-    -- when the shooter is an NPC (which has no real KeyDown).
     ------------------------------------------------------------
     local orig_CalcAmmoType = ENT.CalcAmmoType
     function ENT:CalcAmmoType(ammo, IsReloading, ct, ply)
@@ -48,8 +48,6 @@ hook.Add("InitPostEntity", "gred_npc_emp_patchbase", function()
 
     ------------------------------------------------------------
     -- Patch: GrabTurret
-    -- After the original runs, if the new shooter is an NPC,
-    -- inject the stubs it needs so the gun's Think doesn't error.
     ------------------------------------------------------------
     local orig_GrabTurret = ENT.GrabTurret
     function ENT:GrabTurret(ply, shootOnly)
@@ -57,64 +55,65 @@ hook.Add("InitPostEntity", "gred_npc_emp_patchbase", function()
             orig_GrabTurret(self, ply, shootOnly)
         end
 
-        if IsValid(ply) and ply:IsNPC() then
-            if not ply._gredEmpStubsInjected then
-                ply._gredEmpStubsInjected = true
+        if not (IsValid(ply) and ply:IsNPC()) then return end
 
-                function ply:KeyDown(key)
-                    if key == IN_ATTACK then
-                        local emp = self._gredActiveEmplacement
-                        if IsValid(emp) then
-                            return emp:GetTargetValid()
-                        end
-                        return false
-                    end
-                    return false
-                end
+        if not ply._gredEmpStubsInjected then
+            ply._gredEmpStubsInjected = true
 
-                function ply:IsPlayer()
-                    return false
-                end
-
-                function ply:EyeAngles()
+            function ply:KeyDown(key)
+                if key == IN_ATTACK then
                     local emp = self._gredActiveEmplacement
-                    if IsValid(emp) then
-                        local target = emp:GetTarget()
-                        if IsValid(target) then
-                            return (target:GetPos() - self:GetPos()):Angle()
-                        end
-                    end
-                    return self:GetAngles()
+                    if IsValid(emp) then return emp:GetTargetValid() end
                 end
-
-                function ply:GetEyeTrace()
-                    local emp = self._gredActiveEmplacement
-                    if IsValid(emp) then
-                        local target = emp:GetTarget()
-                        if IsValid(target) then
-                            local startPos = self:GetPos()
-                            local endPos   = target:GetPos()
-                            return util.QuickTrace(startPos, endPos - startPos, emp.Entities)
-                        end
-                    end
-                    return util.QuickTrace(self:GetPos(), self:GetForward() * 1000, {})
-                end
-
-                function ply:DrawViewModel() end
-                function ply:GetPreviousWeapon() return NULL end
-                function ply:GetActiveWeapon()   return NULL end
-                function ply:Give()              return NULL end
-                function ply:SelectWeapon()      end
-                function ply:StripWeapon()       end
-                function ply:SetActiveWeapon()   end
-                function ply:CrosshairEnable()   end
-                function ply:EnterVehicle()      end
-                function ply:ExitVehicle()       end
-                function ply:ChatPrint()         end
+                return false
             end
 
-            ply._gredActiveEmplacement = self
+            function ply:IsPlayer() return false end
+
+            function ply:EyeAngles()
+                local emp = self._gredActiveEmplacement
+                if IsValid(emp) then
+                    local target = emp:GetTarget()
+                    if IsValid(target) then
+                        return (target:GetPos() - self:GetPos()):Angle()
+                    end
+                end
+                return self:GetAngles()
+            end
+
+            function ply:GetEyeTrace()
+                local emp = self._gredActiveEmplacement
+                if IsValid(emp) then
+                    local target = emp:GetTarget()
+                    if IsValid(target) then
+                        return util.QuickTrace(self:GetPos(), target:GetPos() - self:GetPos(), emp.Entities)
+                    end
+                end
+                return util.QuickTrace(self:GetPos(), self:GetForward() * 1000, {})
+            end
+
+            function ply:DrawViewModel()         end
+            function ply:GetPreviousWeapon()     return NULL end
+            function ply:GetActiveWeapon()       return NULL end
+            function ply:Give()                  return NULL end
+            function ply:SelectWeapon()          end
+            function ply:StripWeapon()           end
+            function ply:SetActiveWeapon()       end
+            function ply:CrosshairEnable()       end
+            function ply:EnterVehicle()          end
+            function ply:ExitVehicle()           end
+            function ply:ChatPrint()             end
         end
+
+        ply._gredActiveEmplacement = self
     end
 
+    return true
+end
+
+-- Retry every Think tick until gred_emp_base is fully registered
+hook.Add("Think", "gred_npc_emp_patchbase_sv", function()
+    if PatchBase() then
+        hook.Remove("Think", "gred_npc_emp_patchbase_sv")
+    end
 end)

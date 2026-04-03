@@ -1,21 +1,21 @@
 -- gred_npc_emp_cl_fix.lua
--- Clientside fix for cl_init.lua:275 crash.
--- When the shooter is a non-player entity (NPC), KeyDown doesn't
--- exist on the client, causing "attempt to call method 'KeyDown' (a nil value)".
--- We wrap the base ENT Think to inject safe stubs before the base code runs.
+-- Clientside fix: guards cl_init Think() against non-player shooters.
+-- Uses a deferred Think hook because InitPostEntity fires before
+-- Gredwitch finishes registering gred_emp_base clientside.
 
-hook.Add("InitPostEntity", "gred_npc_emp_cl_patchbase", function()
-    local base = scripted_ents.Get("gred_emp_base")
-    if not base then return end
-    local ENT = base.t
+local function PatchBase()
+    local reg = scripted_ents.GetStored("gred_emp_base")
+    if not reg then return false end
+
+    local ENT = reg.t or reg
+    if not ENT or not ENT.Think then return false end
+
+    if ENT._gredCLNPCPatched then return true end
+    ENT._gredCLNPCPatched = true
 
     local orig_Think = ENT.Think
     function ENT:Think()
-        if not self.Initialized then
-            self:Initialize()
-            return
-        end
-
+        -- Inject clientside stubs on any non-player shooter before base Think runs
         local ply = self:GetShooter()
         if IsValid(ply) and not ply:IsPlayer() then
             if not ply._gredCLStubsInjected then
@@ -31,8 +31,14 @@ hook.Add("InitPostEntity", "gred_npc_emp_cl_patchbase", function()
             end
         end
 
-        if orig_Think then
-            orig_Think(self)
-        end
+        orig_Think(self)
+    end
+
+    return true
+end
+
+hook.Add("Think", "gred_npc_emp_patchbase_cl", function()
+    if PatchBase() then
+        hook.Remove("Think", "gred_npc_emp_patchbase_cl")
     end
 end)
